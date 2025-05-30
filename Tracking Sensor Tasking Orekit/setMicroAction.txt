@@ -1,0 +1,124 @@
+public AngularDirection setMicroAction(AbsoluteDate current, AngularDirection sensorPointing) {
+
+        // Output
+        double maxIG = Double.NEGATIVE_INFINITY;
+        AngularDirection pointing = new AngularDirection(topoInertial, new double[]{0., 0.},
+                                                            AngleType.RADEC);
+        ObservedObject target = null;    
+
+        AbsoluteDate targetDate = 
+                current.shiftedBy(allocation + TrackingObjective.sensor.getSettlingT() + preparation 
+                                + TrackingObjective.sensor.getExposureT()/2);
+
+        // Iterate through list of objects of interest
+        for (ObservedObject candidate : updatedTargets) {
+
+            final EventDetector visibility =
+                    new ElevationDetector(maxcheck, threshold, stationHorizon)
+                    .withConstantElevation(this.sensor.getElevCutOff())
+                    .withHandler((s, d, increasing) -> {
+                        System.out.println(" Visibility on object " +
+                                           candidate.getId() +
+                                           (increasing ? " begins at " : " ends at ") +
+                                           s.getDate().toStringWithoutUtcOffset(utc, 3));
+                        return increasing ? Action.CONTINUE : Action.STOP;  // stop propagation when object leaves FOR
+                    });
+            // set up eclipse detector
+            EclipseDetector eclipseDetector = new EclipseDetector(sun, Constants.SUN_RADIUS, earth)
+                                                .withMaxCheck(60.0)
+                                                .withThreshold(1.0e-3)
+                                                .withHandler(new ContinueOnEvent())
+                                                .withUmbra();
+
+            // Set up propagator
+            Vector3D pos = candidate.getState().getPositionVector();
+            Vector3D vel = candidate.getState().getVelocityVector();
+            PVCoordinates pv = new PVCoordinates(pos, vel);
+            Orbit initialOrbit = new CartesianOrbit(pv, candidate.getFrame(), 
+                                     candidate.getEpoch(), Constants.WGS84_EARTH_MU);
+            KeplerianPropagator kepPropo = new KeplerianPropagator(initialOrbit);
+            
+            // Add event to be detected
+            final EventsLogger horizonLogger = new EventsLogger();
+            EventsLogger earthShadowLogger = new EventsLogger();
+            kepPropo.addEventDetector(horizonLogger.monitorDetector(visibility));
+            kepPropo.addEventDetector(earthShadowLogger.monitorDetector(eclipseDetector));
+
+            // Set up covariance matrix provider and add it to the propagator
+            final String stmName = "stm";
+            final MatricesHarvester harvester = 
+                kepPropo.setupMatricesComputation(stmName, null, null);
+/*             final StateCovarianceMatrixProvider providerCov = 
+                new StateCovarianceMatrixProvider("covariance", stmName, harvester, covInit);
+            kepPropo.addAdditionalStateProvider(providerCov); */
+
+            // Propagate
+            SpacecraftState predState = kepPropo.propagate(targetDate);
+            if (eclipseDetector.g(predState)<0.) {
+                // Observation cannot be performed because object in Earth shadow
+                continue;
+            } else if (visibility.g(predState) < 0.) {
+                // Object not in FOV even though sensor was placed such that visibility is provided
+                throw new IllegalArgumentException("Object is not in FOV");
+            }
+
+            // Transform spacecraft state into sensor pointing direction
+            AngularDirection raDecPointing = transformStateToPointing(predState, topoInertial);
+
+            boolean goodSolarPhase = 
+                Tasking.checkSolarPhaseCondition(targetDate, raDecPointing);
+
+            if (!goodSolarPhase) {
+                // Observation cannot be performed because of lack of visibility
+                continue;
+            }
+            double distMoon = 
+                AngularDirection.computeAngularDistMoon(targetDate, topoInertial, raDecPointing);
+            if (distMoon < minMoonDist) {
+                // Observation cannot be performed because of lack of visibility
+                continue;
+            }
+            double actualSlewT = 
+                TrackingObjective.sensor.computeRepositionT(sensorPointing, raDecPointing, true);
+            if(actualSlewT > TrackingObjective.allocation) {
+                // not enough time to slew to target pointing direction
+                continue;
+            }
+            
+            // Generate real measurement
+            AngularDirection realRaDec = generateOneMeasurement(predState, targetDate);
+            RealMatrix R = 
+                MatrixUtils.createRealDiagonalMatrix(new double[]{FastMath.pow(1./206265, 2), 
+                                                                  FastMath.pow(1./206265, 2)});
+                //MatrixUtils.createRealDiagonalMatrix(new double[]{0., 0.});
+            
+            double[] residuals = new double[2];
+            ObservedObject[] predAndCorr = 
+                estimateStateWithOwnExtendedKalman(realRaDec, R, predState, harvester, candidate, 
+                                           this.topoInertial, residuals);
+            double iG = computeInformationGain(predAndCorr[0], predAndCorr[1]);
+            
+            if (iG>maxIG) {
+                maxIG = iG;
+                pointing = raDecPointing;
+                target = predAndCorr[1];
+                //App.printCovariance(target.getCovariance().getCovarianceMatrix());
+            }
+        }
+        // Update targeted candidate in the list of objects of interest
+        for(ObservedObject candidate : updatedTargets) {
+            if (Objects.isNull(target)) {
+                // none of the considered taregts is observable
+                return null;
+            }
+            if(candidate.getId() == target.getId()) {
+                candidate.setState(target.getState());
+                candidate.setCovariance(target.getCovariance());
+                candidate.setEpoch(targetDate);
+                this.lastUpdated = candidate.getId();
+                break;
+            }
+        }
+
+        return pointing;
+    }
