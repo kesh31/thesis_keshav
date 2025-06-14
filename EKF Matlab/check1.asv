@@ -1,0 +1,10 @@
+% Checking true state simulated by me vs data from linh's mat file
+
+full_sim_data = load(("true_prop_sim_meas_data.mat","x_true_store","x_est_store","z_obs_store","P_est_store","ra_est_store","ra_true_store","dec_true_store","dec_est_store");
+
+meas_data = load("orbit_model_meas_radec", "tvec", "obs_data");
+
+true_data = load("orbit_model_truth.mat",'Xt_mat','time');
+
+figure;
+subplot
