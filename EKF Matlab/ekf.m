@@ -57,7 +57,7 @@ function [Xref_mat, P_mat, resids] = ekf(X0_ref, t_obs, obs_data, ...
             [Hk_til, Gk] = feval(H_fcn, tk, Xref_k, params);
             yk = Yk - Gk;                           % Define as residuals
 
-            % Corrector
+            % Corrector     
             Kk = Pk_bar * Hk_til' * inv(Hk_til * Pk_bar * Hk_til' + Rk); 
             xhat = xk_bar + Kk * (yk - Hk_til * xk_bar);
    
@@ -70,13 +70,14 @@ function [Xref_mat, P_mat, resids] = ekf(X0_ref, t_obs, obs_data, ...
             % Extended KF update
             %xhatk(k) = vecnorm(xhat);
             if k~=1 && vecnorm(xhat) > converged
+             
                 Xref_k = Xref_mat(:,k);
                 xhat = zeros(n, 1);
             end
 
-            
             % Update
             Xref_stm_prev = [Xref_k; Phi0]';
+            % Xref_stm_prev = [Xref_k; reshape(Phik,[],1)]';
             t_pre = tk;
             P_pre = Pk;
             xhat_pre = xhat;

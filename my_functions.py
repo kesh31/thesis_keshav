@@ -62,6 +62,7 @@ def sat_prop(
         target,
         target_TLE = None,
         target_initial_state = None,
+        fixed_step_size = 60.0
         ):
     """
     Propogates the target object
@@ -143,7 +144,6 @@ def sat_prop(
     termination_condition = propagation_setup.propagator.time_termination(simulation_end_epoch)
 
     # Create numerical integrator settings
-    fixed_step_size = 60.0
     integrator_settings = propagation_setup.integrator.runge_kutta_fixed_step(
         fixed_step_size, coefficient_set=propagation_setup.integrator.CoefficientSets.rk_4
     )
@@ -180,14 +180,15 @@ def compute_tle_checksum(tle_line):
             checksum += int(c)
         elif c == '-':
             checksum += 1
-    return str(checksum % 10)
+    return str(checksum % 10)   
 
 
 def sat_prop_two_body(
     simulation_start_epoch,
     simulation_end_epoch,
     target,
-    target_initial_state
+    target_initial_state,
+    fixed_step_size = 60.0
 ):
     """
     Same as sat prop, but does a simple 2 body propogation with no perturbations involved
@@ -211,7 +212,6 @@ def sat_prop_two_body(
     )
 
     # Integrator & propagation
-    fixed_step_size = 60.0
     integrator_settings = propagation_setup.integrator.runge_kutta_fixed_step(
         fixed_step_size, coefficient_set=propagation_setup.integrator.CoefficientSets.rk_4
     )
@@ -223,8 +223,24 @@ def sat_prop_two_body(
         simulation_start_epoch, integrator_settings, termination_condition
     )
 
-    simulator = numerical_simulation.create_dynamics_simulator(bodies, propagator_settings)
-    return result2array(simulator.propagation_results.state_history)
+        # Define parameter settings (just initial state for STM)
+    parameter_settings = estimation_setup.parameter.initial_states(propagator_settings, bodies)
+
+    parameters_to_estimate = estimation_setup.create_parameter_set(parameter_settings, bodies)
+
+    # Solve variational equations
+    variational_solver = numerical_simulation.create_variational_equations_solver(
+        bodies,
+        propagator_settings,
+        parameters_to_estimate,
+        simulate_dynamics_on_creation=True
+    )
+
+    state_history = variational_solver.state_history
+    stm_history = variational_solver.state_transition_matrix_history
+
+    return state_history, stm_history
+
 
 
 def lla_to_ECEF(lat_rad,lon_rad,alt_m,flattening,equitorial_radius):
@@ -257,7 +273,7 @@ def state_eci_to_radec(x_eci,gs_eci):
     return ra,dec
 
 
-def sat_prop_with_stm(sim_start, sim_end, target, initial_state):
+def sat_prop_with_stm(sim_start, sim_end, target, initial_state, fixed_step_size = 60.0):
     """
     Similar to sat_prop, but outputs both the state as well as the STM"""
     
@@ -315,7 +331,6 @@ def sat_prop_with_stm(sim_start, sim_end, target, initial_state):
     termination_condition = propagation_setup.propagator.time_termination(sim_end)
 
     # Create numerical integrator settings
-    fixed_step_size = 60.0
     integrator_settings = propagation_setup.integrator.runge_kutta_fixed_step(
         fixed_step_size, coefficient_set=propagation_setup.integrator.CoefficientSets.rk_4
     )
@@ -348,3 +363,4 @@ def sat_prop_with_stm(sim_start, sim_end, target, initial_state):
     stm_history = variational_solver.state_transition_matrix_history
 
     return state_history, stm_history
+

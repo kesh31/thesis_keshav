@@ -1,18 +1,14 @@
 % Satellite Orbit Propagation and EKF Tracking with Rotating Earth
 clear; clc; close all;
-rng(1);
 % Load stuff
 params = load("orbit_model_inputs_radec.mat", 'P0', 'X0_true', ...
               'Rk','GM','Q','Re','dtheta', 'stat_ecef', 'theta0');
-
 meas = load("orbit_model_meas_radec", "tvec", "obs_data");
-
 true_data = load("orbit_model_truth.mat",'Xt_mat','time');
 state_data_true = true_data.Xt_mat;
 
 % Constants
-mu = params.GM * 1e9 ; % earth grav constant [m^3/s^2]
-Re = params.Re * 1e3 ;         % rarth radius [m]
+mu = params.GM ; % earth grav constant [m^3/s^2]
 omega_earth = params.dtheta ; % earth rotation rate [rad/s]
 dt = 60;              % time step [s]
 T = 60*60*4 + 60;             % sim time [s]
@@ -20,16 +16,15 @@ N = T / dt;           % number of time steps
 
 observations = meas.obs_data;
 
-% Initial satellite state [position; velocity] in ECI
-x_true = params.X0_true * 1000;
+% % Initial satellite state [position; velocity] in ECI
+% x_true = params.X0_true * 1000;
+x_true = params.X0_true;
+n = size(x_true, 1); 
 
 % Ground Station in ECEF
-gs_ecef = params.stat_ecef * 1000;
+gs_ecef = params.stat_ecef;
 
 % EKF Initialization 
-x_est = x_true + [100; -100; 50; 0.1; -0.1; 0.05]; % Initial guess
-% x_est = x_true;
-% x_est = zeros(6,1);
 P_est = params.P0;
 R = params.Rk;
 
@@ -41,73 +36,74 @@ dec_est_store = zeros(1, N);
 ra_true_store = zeros(1,N);
 dec_true_store = zeros(1,N);
 z_obs_store = zeros(2,N);
-
 P_est_store = zeros(6,6*N);
-
-% Filling values at first timestep
-x_est_store(:,1) = x_est;
-P_est_store(:,1:6) = P_est;
-theta = params.theta0 + omega_earth * 1;
-rot_matrix = [cos(theta),-sin(theta), 0;sin(theta),cos(theta),0;0,0,1];
-gs_eci = rot_matrix * gs_ecef';
-[ra_est,dec_est] = state_to_radec(x_est,gs_eci);
-ra_est_store(1,1) = ra_est;
-dec_est_store(1,1) = dec_est;
-z_obs_store(:,1) = observations(:,1);
-x_true_store(:,1) = x_true;
-[ra_true,dec_true] = state_to_radec(x_true,gs_eci);
-ra_true_store(1,1) = ra_true;
-dec_true_store(1,1) = dec_true;
-
 
 % Set up settings for ODE45 solver 
 RelTol = 1e-12;                                 % relative tolerance
 AbsTol = 1e-12;                                 % absolute tolerance
 options = odeset('RelTol', RelTol,'AbsTol', AbsTol); 
+Phi0 = reshape((eye(n)), 1, [])'; 
+Xref_Stm0 = [x_true; Phi0];
+xhat_k_prev = zeros(6,1);
+t_pre = true_data.time(1);
 
 % sim + EKF loop
-for k = 2:N
-    t = (k-1)*dt;
+for k = 1:N
+    tk = (k-1)*dt;
 
     % Ground station in ECI
-    theta = params.theta0 + omega_earth * t;
+    theta = params.theta0 + omega_earth * tk;
     rot_matrix = [cos(theta),-sin(theta), 0;sin(theta),cos(theta),0;0,0,1];
     gs_eci = rot_matrix * gs_ecef';
 
     % True propogation
     % x_true = rk4(@(t, x) twobody(t, x, mu), t, x_true, dt);
-    % [~,x_out] = ode45(@(t,x) twobody(t,x,mu),[t t+dt],x_true,options);
-    % x_true = x_out(end,:)';
-    x_true = state_data_true(:,k)*1000;
-
+    if k == 1
+        x_true;
+    else
+        [~,x_out] = ode45(@(t,x) twobody(t,x,mu),[t_pre tk],x_true,options);
+        x_true = x_out(end,:)';
+    end
+    % x_true = state_data_true(:,k);
     [ra_true, dec_true] = measure(x_true, gs_eci);
 
     % Observation
     % z_obs = [ra_true; dec_true] + sqrt(R) * randn(2, 1); % Add noise
-    z_obs = observations(:,k);
+    zk = observations(:,k);
 
     % Prediction
-    Phi0 = reshape(eye(6), [], 1);
-    X_stm_init = [x_est; Phi0];
-    
-    [t_vec, X_stm_out] = ode45(@(t, X) int_twobody_stm(t, X, mu), [t t+dt], X_stm_init,options);
-    x_pred = X_stm_out(end, 1:6)';  % Nominal state
-    Phi_k = reshape(X_stm_out(end, 7:end), 6, 6);  % STM
-    Gamma_k = zeros(6, 3);
-    Gamma_k(1:3, :) = 0.5 * dt^2 * eye(3);
-    Gamma_k(4:6, :) = dt * eye(3);
+    if k == 1
+        Xref_stm_out = Xref_Stm0';
+    else
+        [~, Xref_stm_out] = ode45(@(t, X) int_twobody_stm(t, X, mu), [t_pre tk], Xref_stm_prev,options);
+    end
+    Xref_k = Xref_stm_out(end, 1:6)';
+    Phi_k = reshape(Xref_stm_out(end, 7:end), 6, 6)';  % STM
+    Gammak = getGammaMatrix(t_pre, tk);
 
-    P_pred = Phi_k * P_est * Phi_k' + Gamma_k * params.Q * Gamma_k';
+    xhat_k_kminus1 = Phi_k * xhat_k_prev;  % Nominal state
+    P_k_kminus1 = Phi_k * P_est * Phi_k' + Gammak * params.Q * Gammak';
 
     % EKF Update
-    [z_pred, H] = measurement_model(x_pred, gs_eci);
-    y_innovation = z_obs - z_pred; 
-    y_innovation(1) = wrapToPi(y_innovation(1));
-    S_cov = H * P_pred * H' + R;
-    K_gain = P_pred * H' / S_cov;
+    [Gk, H] = measurement_model(Xref_k, gs_eci);
+    yk = zk - Gk; 
+    % yk(1) = wrapToPi(yk(1));
+    S_cov = H * P_k_kminus1 * H' + R;
+    Kk = P_k_kminus1 * H' / S_cov;
 
-    x_est = x_pred + K_gain * y_innovation;
-    P_est = (eye(6) - K_gain * H) * P_pred;
+    xhat_k = xhat_k_kminus1 + Kk * (yk - H*xhat_k_kminus1);
+    P_est = (eye(6) - Kk*H) * P_k_kminus1 * (eye(6) - Kk*H)' + Kk*R*Kk';
+    x_est = Xref_k + xhat_k;
+
+    if k~=1 && vecnorm(xhat_k) > 1
+        Xref_k = x_est;
+        xhat_k = zeros(n, 1);
+    end
+
+    % Xref_stm_prev = [Xref_k;reshape(Phi_k,[],1)];
+    Xref_stm_prev = [Xref_k;reshape(Phi0,[],1)]';
+    xhat_k_prev = xhat_k;
+    t_pre = tk;
 
     % Estimated measurements
     [ra_est,dec_est] = state_to_radec(x_est,gs_eci);
@@ -120,8 +116,7 @@ for k = 2:N
     ra_true_store(k) = ra_true;
     dec_true_store(k) = dec_true;
     P_est_store(:,(k-1)*6+1:k*6) = P_est;
-    z_obs_store(:,k) = z_obs;
-
+    z_obs_store(:,k) = zk;
 end
 
 % wrap RA
@@ -130,31 +125,32 @@ ra_est_store = wrapTo2Pi(ra_est_store);
 
 %%
 
-% % Plot true position
-% figure;
-% subplot(3,1,1)
-% plot(0:dt:T-dt,x_true_store(1,:))
-% xlabel('X position (m)'), ylabel('Time')
-% 
-% subplot(3,1,2)
-% plot(0:dt:T-dt,x_true_store(2,:))
-% xlabel('Y position (m)'), ylabel('Time')
-% 
-% subplot(3,1,3)
-% plot(0:dt:T-dt,x_true_store(3,:))
-% xlabel('Z position (m)'), ylabel('Time')
+% Plot true position
+figure;
+subplot(3,1,1)
+plot(0:dt:T-dt,x_true_store(1,:))
+xlabel('X position (m)'), ylabel('Time')
+
+subplot(3,1,2)
+plot(0:dt:T-dt,x_true_store(2,:))
+xlabel('Y position (m)'), ylabel('Time')
+
+subplot(3,1,3)
+plot(0:dt:T-dt,x_true_store(3,:))
+xlabel('Z position (m)'), ylabel('Time')
+sgtitle('Evolution of true position')
 
 
-% % Plot Errors
-% figure;
-% subplot(2,1,1);
-% plot(12000:dt:T-dt, vecnorm(x_true_store(1:3,201:end) - x_est_store(1:3,201:end)));
-% ylabel('Position Error [m]'); title('EKF Position Estimation Error');
-% 
-% subplot(2,1,2);
-% plot(12000:dt:T-dt, vecnorm(x_true_store(4:6,201:end) - x_est_store(4:6,201:end)));
-% ylabel('Velocity Error [m/s]'); xlabel('Time [s]');
-% title('EKF Velocity Estimation Error');
+% Plot Errors
+figure;
+subplot(2,1,1);
+plot(12000:dt:T-dt, vecnorm(x_true_store(1:3,201:end) - x_est_store(1:3,201:end)));
+ylabel('Position Error [m]'); title('EKF Position Estimation Error');
+
+subplot(2,1,2);
+plot(12000:dt:T-dt, vecnorm(x_true_store(4:6,201:end) - x_est_store(4:6,201:end)));
+ylabel('Velocity Error [m/s]'); xlabel('Time [s]');
+title('EKF Velocity Estimation Error');
 
 % Plot measurements
 figure;
@@ -172,23 +168,23 @@ xlabel('Time [s]'); ylabel('Elevation (degrees)')
 legend('Estimated Elevation','True Elevation')
 sgtitle('Observations vs True Angles')
 
-% % Plot true angles
-% figure;
-% plot(0:dt:T-dt,rad2deg(ra_true_store),'.')
-% hold on
-% plot(0:dt:T-dt,rad2deg(dec_true_store),'.')
-% xlabel('Degrees'),ylabel('Time')
-% title('True Angles')
-% legend("Right Ascension","Declination")
+% Plot true angles
+figure;
+plot(0:dt:T-dt,rad2deg(ra_true_store),'.')
+hold on
+plot(0:dt:T-dt,rad2deg(dec_true_store),'.')
+xlabel('Degrees'),ylabel('Time')
+title('True Angles')
+legend("Right Ascension","Declination")
 
 
-% figure;
-% plot3(x_true_store(1,:), x_true_store(2,:), x_true_store(3,:), 'b');
-% hold on;
-% plot3(x_est_store(1,:), x_est_store(2,:), x_est_store(3,:), 'r--');
-% legend('True Orbit', 'Estimated Orbit');
-% xlabel('X [m]'); ylabel('Y [m]'); zlabel('Z [m]');
-% title('Satellite Orbit in ECI Frame'); axis equal;
+figure;
+plot3(x_true_store(1,:), x_true_store(2,:), x_true_store(3,:), 'b');
+hold on;
+plot3(x_est_store(1,:), x_est_store(2,:), x_est_store(3,:), 'r--');
+legend('True Orbit', 'Estimated Orbit');
+xlabel('X [m]'); ylabel('Y [m]'); zlabel('Z [m]');
+title('Satellite Orbit in ECI Frame'); axis equal;
 
 figure;
 subplot(3,1,1);
@@ -231,14 +227,11 @@ end
 function [h, H] = measurement_model(x, gs_eci)
     pos_topo = x(1:3) - gs_eci;
     range = norm(pos_topo);
-    ra = atan2(pos_topo(2), pos_topo(1));
+    ra = atan(pos_topo(2)/pos_topo(1));
+    % ra = atan2(pos_topo(2), pos_topo(1));
     dec = asin(pos_topo(3)/range);
     h = [ra;dec];
     
-    % Numerical Jacobian
-    % eps = 1e-5;
-    % H = zeros(2,6);
-
     % Compute observation partial derivatives
     H11 = pos_topo(1)/range;
     H12 = pos_topo(2)/range;
@@ -300,10 +293,20 @@ function dX = int_twobody_stm(t, X, mu)
     % State + STM derivative
     dX = zeros(42,1);
     dX(1:6) = [X(4); X(5); X(6); -mu*X(1:3)/r^3];
-    Phi = reshape(X(7:end), 6, 6);
-    dPhi = A * Phi;
-    dX(7:end) = reshape(dPhi, 36, 1);
+    dX(7:end) = reshape((A * reshape(X(7:end), 6, 6)').', 1, []); 
+    % Phi = reshape(X(7:end), 6, 6);
+    % dPhi = A * Phi;
+    % dX(7:end) = reshape(dPhi, 36, 1);
 end
 
+function Gamma = getGammaMatrix(t_pre, t_cur)
 
-save("ekf_sim_meas_data.mat","x_true_store","x_est_store","z_obs_store","P_est_store","ra_est_store","ra_true_store","dec_true_store","dec_est_store");
+    timediff = t_cur - t_pre;
+    Gamma = zeros(6, 3);
+    for k=1:size(Gamma, 2)
+        Gamma(k,k) = 1/2 * timediff^2;
+        Gamma(k+3,k) = timediff;
+    end
+end
+
+% save("ekf_es_true_prop_data.mat","x_true_store","x_est_store","z_obs_store","P_est_store","ra_est_store","ra_true_store","dec_true_store","dec_est_store");
