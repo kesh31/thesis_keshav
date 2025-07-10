@@ -2,7 +2,7 @@ clear;clc;close all;
 
 % Checking true state simulated by me vs data from linh's mat file
 
-full_sim_data = load("ekf_es_true_prop_data.mat","x_true_store","x_est_store","z_obs_store","P_est_store","ra_est_store","ra_true_store","dec_true_store","dec_est_store");
+full_sim_data = load("ekf_es_true_prop_data_with_range.mat","x_true_store","x_est_store","z_obs_store","P_est_store","ra_est_store","ra_true_store","dec_true_store","dec_est_store");
 
 meas_data = load("orbit_model_meas_radec", "tvec", "obs_data");
 
@@ -25,11 +25,11 @@ dec_err = full_sim_data.dec_est_store - full_sim_data.dec_true_store;
 % Position errors in ECI (X,Y,Z) with 3-sigma bounds
 figure;
 subplot(3,1,1)
-plot(time, Xerr_mat(1, :), '.')
+plot(time(50:end), Xerr_mat(1, 50:end), '.')
 hold on
-plot(time, 3*sigma_eci(1, :), '-')
+plot(time(50:end), 3*sigma_eci(1, 50:end), '-')
 hold on
-plot(time, -3*sigma_eci(1, :), '-')
+plot(time(50:end), -3*sigma_eci(1, 50:end), '-')
 hold on
 % xlim([0 2.8833])
 % ylim([-1e3 2.5e3])
@@ -37,21 +37,21 @@ ylabel("PosX Error [m]")
 title('Position error in ECI')
 
 subplot(3,1,2)
-plot(time, Xerr_mat(2,:), '.')
+plot(time(50:end), Xerr_mat(2,50:end), '.')
 hold on
-plot(time, 3*sigma_eci(2,:), '-')
+plot(time(50:end), 3*sigma_eci(2,50:end), '-')
 hold on
-plot(time, -3*sigma_eci(2,:), '-')
+plot(time(50:end), -3*sigma_eci(2,50:end), '-')
 % xlim([0 2.8833])
 % ylim([-2.5e3 2e2])
 ylabel("PosY Error [m]")
 
 subplot(3,1,3)
-plot(time, Xerr_mat(3,:), '.')
+plot(time(50:end), Xerr_mat(3,50:end), '.')
 hold on
-plot(time, 3*sigma_eci(3,:), '-')
+plot(time(50:end), 3*sigma_eci(3,50:end), '-')
 hold on
-plot(time, -3*sigma_eci(3,:), '-')
+plot(time(50:end), -3*sigma_eci(3,50:end), '-')
 %xlim([0 2.8833])
 % ylim([-1.5e3 1.5e3])
 % xlabel("time [h]")

@@ -364,3 +364,115 @@ def sat_prop_with_stm(sim_start, sim_end, target, initial_state, fixed_step_size
 
     return state_history, stm_history
 
+def measurement_model(x_eci,gs_eci):
+    """
+    Inputs - state of satellite in ECI and postion of ground station in ECI. 
+    Units can be meters or kms, as long as they are consistent
+    Outputs - right ascension and declination in radians, and measurement matrix
+    """
+
+    # Computing observables
+    pos_topo = x_eci[0:3] - gs_eci
+    range = np.sqrt(pos_topo[0]**2 + pos_topo[1]**2 + pos_topo[2]**2)
+    ra = math.atan2(pos_topo[1],pos_topo[0])
+    # ra = math.atan(pos_topo[1]/pos_topo[0])
+    dec = math.asin(pos_topo[2]/range)
+
+    h = np.array([ra, dec])
+
+    H11 = pos_topo[0]/range
+    H12 = pos_topo[1]/range
+    H13 = pos_topo[2]/range
+    H21 = -pos_topo[1]/(pos_topo[0]**2 * (1 + (pos_topo[1]/pos_topo[0])**2))
+    H22 = 1/(pos_topo[0] * (1 + (pos_topo[1]/pos_topo[0])**2))
+    H31 = -pos_topo[2] * pos_topo[0]/(range**3 * np.sqrt(1-pos_topo[2]**2/range**2))
+    H32 = -pos_topo[2] * pos_topo[1]/(range**3 * np.sqrt(1-pos_topo[2]**2/range**2))
+    H33 = (1/range - pos_topo[2]**2/range**3) / np.sqrt(1-(pos_topo[2]/range)**2)
+
+    H_w_range = np.array([[H11, H12, H13,0,0,0],[H21, H22,0,0,0,0],[H31, H32, H33,0,0,0]])
+
+    H = H_w_range[1:,:]
+
+    return h,H
+
+def getGammaMatrix(t_pre,t_cur):
+    timediff = t_cur - t_pre
+    Gamma = np.zeros((6,3))
+    for k in range(3):
+        Gamma[k,k] = 0.5*timediff**2
+        Gamma[k+3,k] = timediff
+    return Gamma
+
+
+def sat_prop_time_efficient(target_initial_state,simulation_start_epoch,simulation_end_epoch,acceleration_models,integrator_settings,bodies):
+    
+    termination_condition = propagation_setup.propagator.time_termination(simulation_end_epoch)
+
+    propagator_settings = propagation_setup.propagator.translational(
+        ["Earth"], acceleration_models, ["current_sat"], target_initial_state,
+        simulation_start_epoch, integrator_settings, termination_condition
+    )
+
+
+    # Define parameter settings (just initial state for STM)
+    parameter_settings = estimation_setup.parameter.initial_states(propagator_settings, bodies)
+    parameters_to_estimate = estimation_setup.create_parameter_set(parameter_settings, bodies)
+
+    # Solve variational equations
+    variational_solver = numerical_simulation.create_variational_equations_solver(
+        bodies,
+        propagator_settings,
+        parameters_to_estimate,
+        simulate_dynamics_on_creation=True
+    )
+
+    state_history = variational_solver.state_history
+    stm_history = variational_solver.state_transition_matrix_history
+
+    return state_history,stm_history
+
+
+def kl_divergence(prior_cov, post_cov):
+
+    n = prior_cov.shape[0]
+
+    inv_prior = np.linalg.inv(prior_cov)
+    log_det_prior = np.log(np.linalg.det(prior_cov))
+    log_det_post = np.log(np.linalg.det(post_cov))
+
+
+    trace_term = np.trace(inv_prior @ post_cov)
+    log_det_ratio = log_det_prior - log_det_post
+
+    D_kl = 0.5 * (log_det_ratio - n + trace_term)
+    return D_kl
+
+def compute_elevation(sat_eci, gs_eci):
+
+    rel_vec = sat_eci - gs_eci
+    rel_vec_unit = rel_vec / np.linalg.norm(rel_vec)
+
+    zenith_unit = gs_eci / np.linalg.norm(gs_eci)
+
+    cos_theta = np.dot(rel_vec_unit, zenith_unit)
+    theta = np.arccos(cos_theta)
+    elevation = np.pi / 2 - theta
+
+    return elevation  # elevation in radians
+
+def compute_solar_phase_angle(sat_pos_eci, sun_pos_eci, gs_pos_eci):
+    # Vector from Sun to Satellite
+    r_sun_sat = sat_pos_eci - sun_pos_eci
+    
+    # Vector from Earth to Satellite (Earth is origin in ECI)
+    r_gs_sat = sat_pos_eci - gs_pos_eci
+
+    # Compute angle
+    dot_product = np.dot(r_sun_sat, r_gs_sat)
+    norm_product = np.linalg.norm(r_sun_sat) * np.linalg.norm(r_gs_sat)
+
+    # Clamp value for numerical stability
+    cos_theta = dot_product / norm_product
+
+    phase_angle_rad = np.arccos(cos_theta)  # in radians
+    return phase_angle_rad

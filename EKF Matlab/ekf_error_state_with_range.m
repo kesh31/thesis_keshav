@@ -1,9 +1,9 @@
 % Satellite Orbit Propagation and EKF Tracking with Rotating Earth
 clear; clc; close all;
 % Load stuff
-params = load("orbit_model_inputs_radec.mat", 'P0', 'X0_true', ...
+params = load("orbit_model_inputs_rgradec.mat", 'P0', 'X0_true', ...
               'Rk','GM','Q','Re','dtheta', 'stat_ecef', 'theta0');
-meas = load("orbit_model_meas_radec", "tvec", "obs_data");
+meas = load("orbit_model_meas_rgradec", "tvec", "obs_data");
 true_data = load("orbit_model_truth.mat",'Xt_mat','time');
 state_data_true = true_data.Xt_mat;
 
@@ -31,12 +31,14 @@ R = params.Rk;
 % Storing values
 x_true_store = zeros(6, N);
 x_est_store = zeros(6, N);
+rg_est_store = zeros(1, N);
 ra_est_store = zeros(1, N);
 dec_est_store = zeros(1, N);
 ra_true_store = zeros(1,N);
 dec_true_store = zeros(1,N);
-z_obs_store = zeros(2,N);
+z_obs_store = zeros(3,N);
 P_est_store = zeros(6,6*N);
+Kk_norm = zeros(1,N);
 
 % Set up settings for ODE45 solver 
 RelTol = 1e-12;                                 % relative tolerance
@@ -58,10 +60,12 @@ for k = 1:N
 
     % True propogation
     % x_true = rk4(@(t, x) twobody(t, x, mu), t, x_true, dt);
-    if k = 1
-        x_true
-    [~,x_out] = ode45(@(t,x) twobody(t,x,mu),[t_pre tk],x_true,options);
-    x_true = x_out(end,:)';
+    if k == 1
+        x_true;
+    else
+        [~,x_out] = ode45(@(t,x) twobody(t,x,mu),[t_pre tk],x_true,options);
+        x_true = x_out(end,:)';
+    end
     % x_true = state_data_true(:,k);
     [ra_true, dec_true] = measure(x_true, gs_eci);
 
@@ -73,10 +77,14 @@ for k = 1:N
     if k == 1
         Xref_stm_out = Xref_Stm0';
     else
+        Xref_stm_prev(1:3) * 1000;
         [~, Xref_stm_out] = ode45(@(t, X) int_twobody_stm(t, X, mu), [t_pre tk], Xref_stm_prev,options);
     end
     Xref_k = Xref_stm_out(end, 1:6)';
     Phi_k = reshape(Xref_stm_out(end, 7:end), 6, 6)';  % STM
+    % norm(Xref_k)
+    % norm(Phi_k,"fro")
+
     Gammak = getGammaMatrix(t_pre, tk);
 
     xhat_k_kminus1 = Phi_k * xhat_k_prev;  % Nominal state
@@ -88,6 +96,7 @@ for k = 1:N
     % yk(1) = wrapToPi(yk(1));
     S_cov = H * P_k_kminus1 * H' + R;
     Kk = P_k_kminus1 * H' / S_cov;
+    Kk_norm(k) = norm(Kk,"fro");
 
     xhat_k = xhat_k_kminus1 + Kk * (yk - H*xhat_k_kminus1);
     P_est = (eye(6) - Kk*H) * P_k_kminus1 * (eye(6) - Kk*H)' + Kk*R*Kk';
@@ -104,11 +113,12 @@ for k = 1:N
     t_pre = tk;
 
     % Estimated measurements
-    [ra_est,dec_est] = state_to_radec(x_est,gs_eci);
+    [rg_est,ra_est,dec_est] = state_to_rgradec(x_est,gs_eci);
 
     % --- Store Results ---
     x_true_store(:,k) = x_true;
     x_est_store(:,k) = x_est;
+    rg_est_store = rg_est;
     ra_est_store(k) = ra_est;
     dec_est_store(k) = dec_est;
     ra_true_store(k) = ra_true;
@@ -222,13 +232,13 @@ function [ra, dec] = measure(x_sat, gs_eci)
     dec = asin(r_topo(3)/r);
 end
 
-function [h, H] = measurement_model(x, gs_eci)
+function [h, H_w_range] = measurement_model(x, gs_eci)
     pos_topo = x(1:3) - gs_eci;
     range = norm(pos_topo);
     ra = atan(pos_topo(2)/pos_topo(1));
     % ra = atan2(pos_topo(2), pos_topo(1));
     dec = asin(pos_topo(3)/range);
-    h = [ra;dec];
+    h = [range;ra;dec];
     
     % Compute observation partial derivatives
     H11 = pos_topo(1)/range;
@@ -246,7 +256,7 @@ function [h, H] = measurement_model(x, gs_eci)
     H_w_range = [H11, H12, H13, 0, 0, 0;
               H21, H22,   0, 0, 0, 0;
               H31, H32, H33, 0, 0, 0];
-    H = H_w_range(2:end,:);
+    % H = H_w_range(2:end,:);
 
 end
 
@@ -259,12 +269,13 @@ function enu = eci2enu(rho_eci, lat_deg, lon_deg)
     enu = R * rho_eci;
 end
 
-function [ra, dec] = state_to_radec(x_eci, gs_eci)
+function [rg,ra, dec] = state_to_rgradec(x_eci, gs_eci)
     % Computes RA and DEC from satellite ECI state and ground station ECI position
 
     rho = x_eci(1:3) - gs_eci;
     r = norm(rho);
-
+    
+    rg = r;
     ra = atan2(rho(2), rho(1));      % RA: angle in xy-plane from x-axis
     dec = asin(rho(3)/r);            % DEC: angle from equatorial plane
 end
@@ -307,4 +318,4 @@ function Gamma = getGammaMatrix(t_pre, t_cur)
     end
 end
 
-% save("ekf_es_data.mat","x_true_store","x_est_store","z_obs_store","P_est_store","ra_est_store","ra_true_store","dec_true_store","dec_est_store");
+save("ekf_es_true_prop_data_with_range.mat","x_true_store","x_est_store","z_obs_store","P_est_store","ra_est_store","ra_true_store","dec_true_store","dec_est_store");

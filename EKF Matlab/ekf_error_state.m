@@ -17,8 +17,9 @@ N = T / dt;           % number of time steps
 observations = meas.obs_data;
 
 % % Initial satellite state [position; velocity] in ECI
-% x_true = params.X0_true * 1000;
-x_true = params.X0_true;
+x_true = params.X0_true;   % 1.0e3 * [0.7577,5.222607,4.8515,0.00221321,0.00467834,-0.0053713]
+x_true = 1.0e+03 *[5.222607,0.7577,4.8515,0.00467834,0.00221321,-0.0053713]';
+% x_true = [6.06900255e+06,6.09157542e+06,1.05883186e+06,-1.25648342e+03,3.83516911e+03,-5.98898761e+03]'/1000;
 n = size(x_true, 1); 
 
 % Ground Station in ECEF
@@ -37,6 +38,7 @@ ra_true_store = zeros(1,N);
 dec_true_store = zeros(1,N);
 z_obs_store = zeros(2,N);
 P_est_store = zeros(6,6*N);
+Kk_norm = zeros(1,N);
 
 % Set up settings for ODE45 solver 
 RelTol = 1e-12;                                 % relative tolerance
@@ -68,17 +70,21 @@ for k = 1:N
     [ra_true, dec_true] = measure(x_true, gs_eci);
 
     % Observation
-    % z_obs = [ra_true; dec_true] + sqrt(R) * randn(2, 1); % Add noise
-    zk = observations(:,k);
+    zk = [ra_true; dec_true] + sqrt(R) * randn(2, 1); % Add noise
+    % zk = observations(:,k);
 
     % Prediction
     if k == 1
         Xref_stm_out = Xref_Stm0';
     else
+        Xref_stm_prev(1:3) * 1000;
         [~, Xref_stm_out] = ode45(@(t, X) int_twobody_stm(t, X, mu), [t_pre tk], Xref_stm_prev,options);
     end
     Xref_k = Xref_stm_out(end, 1:6)';
     Phi_k = reshape(Xref_stm_out(end, 7:end), 6, 6)';  % STM
+    % norm(Xref_k)
+    % norm(Phi_k,"fro")
+
     Gammak = getGammaMatrix(t_pre, tk);
 
     xhat_k_kminus1 = Phi_k * xhat_k_prev;  % Nominal state
@@ -90,6 +96,7 @@ for k = 1:N
     % yk(1) = wrapToPi(yk(1));
     S_cov = H * P_k_kminus1 * H' + R;
     Kk = P_k_kminus1 * H' / S_cov;
+    Kk_norm(k) = norm(Kk,"fro");
 
     xhat_k = xhat_k_kminus1 + Kk * (yk - H*xhat_k_kminus1);
     P_est = (eye(6) - Kk*H) * P_k_kminus1 * (eye(6) - Kk*H)' + Kk*R*Kk';
@@ -227,8 +234,8 @@ end
 function [h, H] = measurement_model(x, gs_eci)
     pos_topo = x(1:3) - gs_eci;
     range = norm(pos_topo);
-    ra = atan(pos_topo(2)/pos_topo(1));
-    % ra = atan2(pos_topo(2), pos_topo(1));
+    % ra = atan(pos_topo(2)/pos_topo(1));
+    ra = atan2(pos_topo(2), pos_topo(1));
     dec = asin(pos_topo(3)/range);
     h = [ra;dec];
     

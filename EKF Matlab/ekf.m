@@ -1,5 +1,5 @@
 function [Xref_mat, P_mat, resids] = ekf(X0_ref, t_obs, obs_data, ...
-                                         intfcn, H_fcn, params)
+                                         intfcn, H_fcn, params,true_data)
     
     % Initialization
     n = size(X0_ref, 1); 
@@ -30,7 +30,10 @@ function [Xref_mat, P_mat, resids] = ekf(X0_ref, t_obs, obs_data, ...
 
         % Update
             tk = t_obs(k);
-            Yk = obs_data(:,k);
+            % Yk = obs_data(:,k);
+            true_state = true_data.Xt_mat(:,k);            % Debug
+            [ra_true, dec_true] = measure_debug(true_state,params,tk);% Debug
+            Yk = [ra_true; dec_true] + sqrt(params.Rk(2,2)) * randn(2, 1); % Add noise
             Rk = params.Rk;
 
             % Compute STM and Xref
@@ -77,7 +80,6 @@ function [Xref_mat, P_mat, resids] = ekf(X0_ref, t_obs, obs_data, ...
 
             % Update
             Xref_stm_prev = [Xref_k; Phi0]';
-            % Xref_stm_prev = [Xref_k; reshape(Phik,[],1)]';
             t_pre = tk;
             P_pre = Pk;
             xhat_pre = xhat;
